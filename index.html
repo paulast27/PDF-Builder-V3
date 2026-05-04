@@ -519,10 +519,15 @@ function scanDocument(srcCanvas,w,h){
     cv.warpPerspective(src,warped,M,new cv.Size(fw,fh));
 
     outCanvas=document.createElement('canvas');
-    outCanvas.width=fw;outCanvas.height=fh;
-    cv.imshow(outCanvas,warped);
-    applySubtleEnhance(outCanvas.getContext('2d'),fw,fh);
+    outCanvas.width=fw; outCanvas.height=fh;
 
+    // Convert BGRA→RGBA before drawing to canvas to avoid color/mirror artifacts
+    const rgba=new cv.Mat();
+    cv.cvtColor(warped,rgba,cv.COLOR_BGRA2RGBA);
+    cv.imshow(outCanvas,rgba);
+    rgba.delete();
+
+    applySubtleEnhance(outCanvas.getContext('2d'),fw,fh);
     warped.delete();M.delete();srcPts.delete();dstPts.delete();
   }
 
