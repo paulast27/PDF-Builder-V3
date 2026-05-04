@@ -350,32 +350,84 @@ async function generatePDF(){
 
 // ── Photo processing ──────────────────────────────────
 async function processPhoto(file,maxDpi,quality,scan){
+  // Step 1: read EXIF orientation and draw correctly oriented canvas
+  const oriented=await getOrientedCanvas(file,maxDpi);
+  const {canvas:c,w,h}=oriented;
+  if(scan&&cvReady){
+    try{
+      const result=scanDocument(c,w,h);
+      return result.toDataURL('image/jpeg',quality);
+    }catch(err){
+      console.warn('Scan failed, using original',err);
+      return c.toDataURL('image/jpeg',quality);
+    }
+  }
+  return c.toDataURL('image/jpeg',quality);
+}
+
+// Read EXIF orientation from JPEG, return corrected canvas
+function getOrientedCanvas(file,maxDpi){
   return new Promise((res,rej)=>{
-    const url=URL.createObjectURL(file);
-    const img=new Image();
-    img.onload=()=>{
-      URL.revokeObjectURL(url);
-      const maxPx=Math.round(210/25.4*maxDpi);
-      let w=img.naturalWidth,h=img.naturalHeight;
-      if(w>maxPx||h>maxPx){const sc=Math.min(maxPx/w,maxPx/h);w=Math.round(w*sc);h=Math.round(h*sc);}
-      const c=document.createElement('canvas');c.width=w;c.height=h;
-      const ctx=c.getContext('2d');
-      ctx.drawImage(img,0,0,w,h);
-      if(scan&&cvReady){
-        try{
-          const result=scanDocument(c,w,h);
-          res(result.toDataURL('image/jpeg',quality));
-        }catch(err){
-          console.warn('Scan failed, using original',err);
-          applyScanColors(ctx,w,h);
-          res(c.toDataURL('image/jpeg',quality));
-        }
-      } else {
-        res(c.toDataURL('image/jpeg',quality));
-      }
+    const reader=new FileReader();
+    reader.onload=e=>{
+      const buf=e.target.result;
+      const orientation=getExifOrientation(buf);
+      const url=URL.createObjectURL(file);
+      const img=new Image();
+      img.onload=()=>{
+        URL.revokeObjectURL(url);
+        const maxPx=Math.round(210/25.4*maxDpi);
+        let sw=img.naturalWidth,sh=img.naturalHeight;
+        // For orientations 5-8 width/height are swapped
+        const swapped=orientation>=5&&orientation<=8;
+        const rw=swapped?sh:sw, rh=swapped?sw:sh;
+        const scale=Math.min(1,maxPx/Math.max(rw,rh));
+        const dw=Math.round(rw*scale),dh=Math.round(rh*scale);
+        const c=document.createElement('canvas');c.width=dw;c.height=dh;
+        const ctx=c.getContext('2d');
+        applyExifTransform(ctx,orientation,dw,dh);
+        ctx.drawImage(img,0,0,Math.round(sw*scale),Math.round(sh*scale));
+        res({canvas:c,w:dw,h:dh});
+      };
+      img.onerror=rej;img.src=url;
     };
-    img.onerror=rej;img.src=url;
+    reader.onerror=rej;
+    reader.readAsArrayBuffer(file);
   });
+}
+
+function getExifOrientation(buf){
+  const view=new DataView(buf);
+  if(view.getUint16(0,false)!==0xFFD8)return 1;
+  let off=2;
+  while(off<view.byteLength){
+    const marker=view.getUint16(off,false);off+=2;
+    if(marker===0xFFE1){
+      if(view.getUint32(off+=2,false)!==0x45786966)return 1;
+      const little=view.getUint16(off+=6,false)===0x4949;
+      off+=view.getUint32(off+4,little);
+      const tags=view.getUint16(off,little);off+=2;
+      for(let i=0;i<tags;i++){
+        if(view.getUint16(off+(i*12),little)===0x0112)
+          return view.getUint16(off+(i*12)+8,little);
+      }
+    } else if((marker&0xFF00)!==0xFF00)break;
+    else off+=view.getUint16(off,false);
+  }
+  return 1;
+}
+
+function applyExifTransform(ctx,orientation,w,h){
+  switch(orientation){
+    case 2:ctx.transform(-1,0,0,1,w,0);break;
+    case 3:ctx.transform(-1,0,0,-1,w,h);break;
+    case 4:ctx.transform(1,0,0,-1,0,h);break;
+    case 5:ctx.transform(0,1,1,0,0,0);break;
+    case 6:ctx.transform(0,1,-1,0,h,0);break;
+    case 7:ctx.transform(0,-1,-1,0,h,w);break;
+    case 8:ctx.transform(0,-1,1,0,0,w);break;
+    default:break;
+  }
 }
 
 // ── OpenCV scan pipeline ──────────────────────────────
@@ -383,81 +435,77 @@ function scanDocument(srcCanvas,w,h){
   const cv=window.cv;
   const src=cv.imread(srcCanvas);
 
-  // Work on a scaled-down copy for faster edge detection
-  const WORK_MAX=800;
+  // Work on scaled-down copy for faster processing
+  const WORK_MAX=1000;
   const scale=Math.min(1,WORK_MAX/Math.max(w,h));
   const ww=Math.round(w*scale),wh=Math.round(h*scale);
   const small=new cv.Mat();
   cv.resize(src,small,new cv.Size(ww,wh));
 
-  // Grayscale
   const gray=new cv.Mat();
   cv.cvtColor(small,gray,cv.COLOR_RGBA2GRAY);
 
-  // Gaussian blur to reduce noise
-  const blurred=new cv.Mat();
-  cv.GaussianBlur(gray,blurred,new cv.Size(9,9),0);
+  // Try multiple preprocessing strategies to find the document
+  const strategies=[
+    ()=>strategyAdaptive(cv,gray,ww,wh),
+    ()=>strategyCanny(cv,gray,5,30,90),
+    ()=>strategyCanny(cv,gray,9,20,60),
+    ()=>strategyCanny(cv,gray,3,50,150),
+    ()=>strategyAdaptiveLoose(cv,gray,ww,wh),
+  ];
 
-  // Adaptive threshold — handles uneven lighting much better than Canny alone
-  const thresh=new cv.Mat();
-  cv.adaptiveThreshold(blurred,thresh,255,cv.ADAPTIVE_THRESH_GAUSSIAN_C,cv.THRESH_BINARY,21,10);
-
-  // Invert so document edges are white
-  const inv=new cv.Mat();
-  cv.bitwise_not(thresh,inv);
-
-  // Dilate to connect broken edges
-  const kernel=cv.Mat.ones(5,5,cv.CV_8U);
-  const dilated=new cv.Mat();
-  cv.dilate(inv,dilated,kernel,new cv.Point(-1,-1),2);
-
-  // Also run Canny on blurred for strong edge detection
-  const canny=new cv.Mat();
-  cv.Canny(blurred,canny,30,100);
-  const cannyDilated=new cv.Mat();
-  cv.dilate(canny,cannyDilated,kernel,new cv.Point(-1,-1),1);
-
-  // Combine both edge maps
-  const combined=new cv.Mat();
-  cv.bitwise_or(dilated,cannyDilated,combined);
-
-  // Find contours
-  const contours=new cv.MatVector();
-  const hierarchy=new cv.Mat();
-  cv.findContours(combined,contours,hierarchy,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
-
-  // Find best quad contour
   let bestQuad=null,bestArea=0;
-  const minArea=ww*wh*0.15; // at least 15% of working image
+  const minArea=ww*wh*0.10;
 
-  for(let i=0;i<contours.size();i++){
-    const cnt=contours.get(i);
-    const area=cv.contourArea(cnt);
-    if(area<minArea)continue;
-    const peri=cv.arcLength(cnt,true);
-    const approx=new cv.Mat();
-    // Try multiple epsilon values to find a clean quad
-    for(const eps of[0.02,0.03,0.04,0.05,0.06]){
-      cv.approxPolyDP(cnt,approx,eps*peri,true);
-      if(approx.rows===4&&area>bestArea){
-        bestArea=area;
-        bestQuad=[];
-        for(let j=0;j<4;j++)bestQuad.push({x:approx.data32S[j*2]/scale,y:approx.data32S[j*2+1]/scale});
-        break;
+  for(const strategy of strategies){
+    const edgeMap=strategy();
+    const contours=new cv.MatVector();
+    const hierarchy=new cv.Mat();
+    cv.findContours(edgeMap,contours,hierarchy,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
+
+    for(let i=0;i<contours.size();i++){
+      const cnt=contours.get(i);
+      const area=cv.contourArea(cnt);
+      if(area<minArea)continue;
+      const peri=cv.arcLength(cnt,true);
+      const approx=new cv.Mat();
+      for(const eps of[0.02,0.03,0.04,0.05,0.06,0.08]){
+        cv.approxPolyDP(cnt,approx,eps*peri,true);
+        if(approx.rows===4&&area>bestArea){
+          bestArea=area;
+          bestQuad=[];
+          for(let j=0;j<4;j++)
+            bestQuad.push({x:approx.data32S[j*2]/scale, y:approx.data32S[j*2+1]/scale});
+        }
       }
+      approx.delete();
     }
-    approx.delete();
+    edgeMap.delete();contours.delete();hierarchy.delete();
+    if(bestQuad&&bestArea>ww*wh*0.20)break; // good enough, stop trying
   }
 
-  let outCanvas=srcCanvas; // default: no crop
+  let outCanvas=srcCanvas;
 
   if(bestQuad){
     const ordered=orderPoints(bestQuad);
+    // Clamp to image bounds with small margin
+    ordered.forEach(p=>{
+      p.x=Math.max(0,Math.min(w-1,p.x));
+      p.y=Math.max(0,Math.min(h-1,p.y));
+    });
+
     const dstW=Math.round(Math.max(dist(ordered[0],ordered[1]),dist(ordered[2],ordered[3])));
     const dstH=Math.round(Math.max(dist(ordered[0],ordered[3]),dist(ordered[1],ordered[2])));
 
-    // Clamp to image bounds
-    ordered.forEach(p=>{p.x=Math.max(0,Math.min(w-1,p.x));p.y=Math.max(0,Math.min(h-1,p.y));});
+    // Ensure portrait if height < width, swap
+    let fw=dstW,fh=dstH,dstPtsArr;
+    if(fw>fh){
+      // rotate 90° to portrait
+      fw=dstH;fh=dstW;
+      dstPtsArr=[0,fw, 0,0, fh,0, fh,fw];
+    } else {
+      dstPtsArr=[0,0, dstW,0, dstW,dstH, 0,dstH];
+    }
 
     const srcPts=cv.matFromArray(4,1,cv.CV_32FC2,[
       ordered[0].x,ordered[0].y,
@@ -465,48 +513,83 @@ function scanDocument(srcCanvas,w,h){
       ordered[2].x,ordered[2].y,
       ordered[3].x,ordered[3].y
     ]);
-    const dstPts=cv.matFromArray(4,1,cv.CV_32FC2,[0,0,dstW,0,dstW,dstH,0,dstH]);
+    const dstPts=cv.matFromArray(4,1,cv.CV_32FC2,dstPtsArr);
     const M=cv.getPerspectiveTransform(srcPts,dstPts);
     const warped=new cv.Mat();
-    cv.warpPerspective(src,warped,M,new cv.Size(dstW,dstH));
+    cv.warpPerspective(src,warped,M,new cv.Size(fw,fh));
 
     outCanvas=document.createElement('canvas');
-    outCanvas.width=dstW;outCanvas.height=dstH;
+    outCanvas.width=fw;outCanvas.height=fh;
     cv.imshow(outCanvas,warped);
-
-    // Subtle post-processing: slight brightness + sharpness only, keep colors
-    applySubtleEnhance(outCanvas.getContext('2d'),dstW,dstH);
+    applySubtleEnhance(outCanvas.getContext('2d'),fw,fh);
 
     warped.delete();M.delete();srcPts.delete();dstPts.delete();
   }
-  // If no quad found: return original canvas untouched
 
-  // Cleanup
-  [src,small,gray,blurred,thresh,inv,kernel,dilated,canny,cannyDilated,combined,contours,hierarchy].forEach(m=>{try{m.delete();}catch(e){}});
-
+  [src,small,gray].forEach(m=>{try{m.delete();}catch(e){}});
   return outCanvas;
 }
 
+// Strategy 1: adaptive threshold
+function strategyAdaptive(cv,gray,w,h){
+  const blurred=new cv.Mat();
+  cv.GaussianBlur(gray,blurred,new cv.Size(9,9),0);
+  const thresh=new cv.Mat();
+  cv.adaptiveThreshold(blurred,thresh,255,cv.ADAPTIVE_THRESH_GAUSSIAN_C,cv.THRESH_BINARY,21,10);
+  const inv=new cv.Mat();cv.bitwise_not(thresh,inv);
+  const kernel=cv.Mat.ones(5,5,cv.CV_8U);
+  const dilated=new cv.Mat();
+  cv.dilate(inv,dilated,kernel,new cv.Point(-1,-1),2);
+  [blurred,thresh,inv,kernel].forEach(m=>m.delete());
+  return dilated;
+}
+
+// Strategy 2: Canny with variable params
+function strategyCanny(cv,gray,blur,t1,t2){
+  const blurred=new cv.Mat();
+  cv.GaussianBlur(gray,blurred,new cv.Size(blur%2===0?blur+1:blur,blur%2===0?blur+1:blur),0);
+  const edges=new cv.Mat();
+  cv.Canny(blurred,edges,t1,t2);
+  const kernel=cv.Mat.ones(5,5,cv.CV_8U);
+  const dilated=new cv.Mat();
+  cv.dilate(edges,dilated,kernel,new cv.Point(-1,-1),2);
+  [blurred,edges,kernel].forEach(m=>m.delete());
+  return dilated;
+}
+
+// Strategy 5: loose adaptive for bright/uniform backgrounds
+function strategyAdaptiveLoose(cv,gray){
+  const blurred=new cv.Mat();
+  cv.GaussianBlur(gray,blurred,new cv.Size(15,15),0);
+  const thresh=new cv.Mat();
+  cv.adaptiveThreshold(blurred,thresh,255,cv.ADAPTIVE_THRESH_MEAN_C,cv.THRESH_BINARY,31,15);
+  const inv=new cv.Mat();cv.bitwise_not(thresh,inv);
+  const kernel=cv.Mat.ones(7,7,cv.CV_8U);
+  const dilated=new cv.Mat();
+  cv.dilate(inv,dilated,kernel,new cv.Point(-1,-1),3);
+  [blurred,thresh,inv,kernel].forEach(m=>m.delete());
+  return dilated;
+}
+
+// Order points: TL, TR, BR, BL — robust version
 function orderPoints(pts){
-  // Sort by sum (x+y): smallest = top-left, largest = bottom-right
-  pts.sort((a,b)=>(a.x+a.y)-(b.x+b.y));
-  const tl=pts[0],br=pts[3];
-  // Of remaining two, smaller x-y diff = top-right
-  const remaining=[pts[1],pts[2]].sort((a,b)=>(a.x-a.y)-(b.x-b.y));
-  const tr=remaining[0],bl=remaining[1];
+  // Sort by x+y: min=TL, max=BR
+  const s=pts.map(p=>p.x+p.y);
+  const d=pts.map(p=>p.x-p.y);
+  const tl=pts[s.indexOf(Math.min(...s))];
+  const br=pts[s.indexOf(Math.max(...s))];
+  const tr=pts[d.indexOf(Math.min(...d))];
+  const bl=pts[d.indexOf(Math.max(...d))];
   return[tl,tr,br,bl];
 }
 function dist(a,b){return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2);}
 
-// Subtle enhance: slight brightness boost + sharpen, KEEP COLORS
 function applySubtleEnhance(ctx,w,h){
-  const id=ctx.getImageData(0,0,w,h);
-  const d=id.data;
-  // Very slight brightness +8 and contrast boost
+  const id=ctx.getImageData(0,0,w,h);const d=id.data;
   for(let i=0;i<d.length;i+=4){
-    d[i]  =Math.min(255,d[i]  *1.05+8);
-    d[i+1]=Math.min(255,d[i+1]*1.05+8);
-    d[i+2]=Math.min(255,d[i+2]*1.05+8);
+    d[i]  =Math.min(255,d[i]  *1.04+6);
+    d[i+1]=Math.min(255,d[i+1]*1.04+6);
+    d[i+2]=Math.min(255,d[i+2]*1.04+6);
   }
   ctx.putImageData(id,0,0);
 }
