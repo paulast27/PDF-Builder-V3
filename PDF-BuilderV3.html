@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#ffffff">
+<title>PDF Builder</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady()"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f5f5f0;color:#1a1a1a;min-height:100vh;font-size:15px;overflow-x:hidden}
+header{background:#fff;border-bottom:.5px solid #e0e0d8;padding:14px 16px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:100}
+header h1{font-size:17px;font-weight:600;flex:1}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 16px;border-radius:10px;border:.5px solid #ccc;background:#fff;font-size:14px;font-weight:500;cursor:pointer}
+.btn:active{background:#f0f0ec;transform:scale(.97)}
+.btn-primary{background:#1a1a1a;color:#fff;border-color:#1a1a1a}
+.btn-sm{padding:6px 12px;font-size:13px}
+.view{display:none}.view.active{display:block}
+.library-empty{text-align:center;padding:60px 20px;color:#888}
+.project-list{padding:12px}
+.project-card{background:#fff;border-radius:12px;border:.5px solid #e0e0d8;padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer}
+.project-card:active{background:#f5f5f0}
+.pi{width:42px;height:42px;background:#f0f0ec;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0}
+.pname{font-weight:500;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pmeta{font-size:12px;color:#888;margin-top:2px}
+.form{padding:16px}
+.field{margin-bottom:16px}
+lbl{display:block;font-size:13px;color:#666;margin-bottom:6px;font-weight:500}
+input[type=text]{width:100%;padding:11px 14px;border:.5px solid #d0d0c8;border-radius:10px;font-size:15px;background:#fff;outline:none;font-family:inherit}
+input[type=text]:focus{border-color:#888}
+.sort-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px}
+.sthumb{aspect-ratio:1;border-radius:8px;overflow:hidden;position:relative;background:#f0f0ec;border:.5px solid #e0e0d8;touch-action:none;user-select:none;cursor:grab}
+.sthumb.dragging{opacity:.3;border:2px dashed #888}
+.sthumb.over{border:2px dashed #1a1a1a}
+.sthumb img{width:100%;height:100%;object-fit:cover;display:block;pointer-events:none}
+.sthumb .num{position:absolute;bottom:4px;left:4px;background:rgba(0,0,0,.6);color:#fff;font-size:11px;font-weight:700;border-radius:4px;padding:2px 6px;pointer-events:none}
+.sthumb .del{position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:13px;display:flex;align-items:center;justify-content:center;border:none;cursor:pointer;z-index:2}
+.drag-hint{font-size:11px;color:#aaa;margin-bottom:10px;text-align:center}
+.csec{background:#f5f5f0;border-radius:10px;padding:12px 14px;margin-bottom:12px}
+.crow{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.crow:last-child{margin-bottom:0}
+.crow lbl{margin:0;flex:1;font-size:13px;color:#444}
+.crow input[type=range]{flex:2}
+.crow span{font-size:13px;font-weight:600;min-width:40px;text-align:right}
+.prow{display:flex;gap:6px;margin-bottom:10px}
+.pbtn{flex:1;padding:7px 4px;border-radius:8px;border:.5px solid #d0d0c8;background:#fff;font-size:12px;cursor:pointer;text-align:center}
+.pbtn.active{background:#1a1a1a;color:#fff;border-color:#1a1a1a}
+.prog{display:none;margin-bottom:16px}.prog.show{display:block}
+.pbar{height:6px;background:#e0e0d8;border-radius:3px;overflow:hidden}
+.pfill{height:100%;background:#1a1a1a;border-radius:3px;transition:width .3s;width:0%}
+.plbl{font-size:12px;color:#888;margin-top:6px;text-align:center}
+.rbox{background:#f0faf4;border:.5px solid #b0dfc0;border-radius:10px;padding:14px;margin-bottom:16px;display:none}
+.rbox.show{display:block}
+.rtitle{font-weight:600;font-size:14px;color:#2a7a4a;margin-bottom:4px}
+.rmeta{font-size:12px;color:#4a9a6a}
+.pvh{padding:16px;display:flex;align-items:flex-start;gap:12px;border-bottom:.5px solid #e0e0d8;background:#fff}
+.pvi{width:52px;height:52px;background:#f0f0ec;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:28px;flex-shrink:0}
+.pvname{font-size:18px;font-weight:600}
+.pvmeta{font-size:13px;color:#888;margin-top:3px}
+.pva{padding:16px;display:flex;flex-direction:column;gap:10px}
+.rnrow{display:flex;gap:8px}.rnrow input{flex:1}
+.back{display:flex;align-items:center;gap:4px;font-size:14px;color:#555;cursor:pointer}
+.back:active{opacity:.7}
+.hint{font-size:11px;color:#aaa;margin-top:4px}
+.overlay{position:fixed;inset:0;background:#f5f5f0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;z-index:999}
+.spin{width:32px;height:32px;border:3px solid #e0e0d8;border-top-color:#1a1a1a;border-radius:50%;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.steps{display:flex;gap:0;margin-bottom:20px;border-radius:10px;overflow:hidden;border:.5px solid #e0e0d8}
+.step{flex:1;padding:9px 4px;text-align:center;font-size:12px;background:#fff;color:#aaa;border-right:.5px solid #e0e0d8}
+.step:last-child{border-right:none}
+.step.active{background:#1a1a1a;color:#fff;font-weight:600}
+.step.done{background:#f0faf4;color:#2a7a4a}
+/* Scan toggle */
+.toggle-card{display:flex;align-items:center;gap:12px;background:#fff;border:.5px solid #e0e0d8;border-radius:10px;padding:13px 14px;cursor:pointer;user-select:none;margin-bottom:10px;transition:border-color .15s}
+.toggle-card.on{border-color:#1a1a1a;background:#fafafa}
+.tcheck{width:22px;height:22px;border-radius:6px;border:1.5px solid #ccc;background:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px;transition:all .15s}
+.tcheck.on{background:#1a1a1a;border-color:#1a1a1a;color:#fff}
+.cv-badge{display:inline-block;font-size:10px;background:#e8f4ff;color:#2a6ab0;border-radius:4px;padding:1px 5px;margin-left:6px;font-weight:600}
+.cv-loading{font-size:11px;color:#f0a030;margin-top:2px}
+</style>
+</head>
+<body>
+
+<div class="overlay" id="overlay">
+  <div class="spin"></div>
+  <div style="font-size:14px;color:#888" id="overlay-msg">Chargement…</div>
+</div>
+
+<!-- LIBRARY -->
+<div id="v-lib" class="view active">
+  <header><span style="font-size:20px">📄</span><h1>PDF Builder</h1><button class="btn btn-primary btn-sm" onclick="goCreate()">+ Nouveau</button></header>
+  <div id="lib-list"></div>
+</div>
+
+<!-- CREATE -->
+<div id="v-create" class="view">
+  <header><span class="back" onclick="goLib()">← Retour</span><h1>Nouveau projet</h1></header>
+  <div class="form">
+    <div class="steps">
+      <div class="step active" id="st1">① Nom</div>
+      <div class="step" id="st2">② Photos</div>
+      <div class="step" id="st3">③ Ordre</div>
+      <div class="step" id="st4">④ Export</div>
+    </div>
+
+    <!-- Step 1 -->
+    <div id="s1">
+      <div class="field"><lbl>Nom du projet</lbl><input type="text" id="proj-name" placeholder="ex: Factures Mars 2025" maxlength="60"></div>
+      <button class="btn btn-primary" style="width:100%;padding:13px" onclick="goStep2()">Suivant →</button>
+    </div>
+
+    <!-- Step 2 -->
+    <div id="s2" style="display:none">
+      <div class="field">
+        <lbl>Sélectionnez vos photos</lbl>
+        <p style="font-size:13px;color:#666;margin-bottom:12px;line-height:1.5">Les photos sont ajoutées dans l'ordre de sélection. Vous pourrez les réordonner à l'étape suivante.</p>
+        <button class="btn btn-primary" style="width:100%;padding:13px;margin-bottom:10px;font-size:15px" onclick="document.getElementById('file-in').click()">📷 Choisir les photos</button>
+        <input type="file" id="file-in" accept="image/*" multiple style="display:none" onchange="onFilePick(this)">
+        <div id="pick-status" style="font-size:13px;color:#888;text-align:center;min-height:20px"></div>
+      </div>
+      <button class="btn" style="width:100%;padding:11px;margin-bottom:8px" onclick="goStep1()">← Retour</button>
+    </div>
+
+    <!-- Step 3 -->
+    <div id="s3" style="display:none">
+      <div class="field">
+        <lbl>Réorganisez l'ordre (<span id="photo-count">0</span> photos)</lbl>
+        <div class="drag-hint">✦ Maintenez et glissez pour réordonner</div>
+        <div class="sort-grid" id="sort-grid"></div>
+        <button class="btn" style="width:100%;margin-top:6px;font-size:13px" onclick="document.getElementById('file-in2').click()">+ Ajouter d'autres photos</button>
+        <input type="file" id="file-in2" accept="image/*" multiple style="display:none" onchange="onFileAdd(this)">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" style="flex:1;padding:11px" onclick="goStep2()">← Retour</button>
+        <button class="btn btn-primary" style="flex:2;padding:11px" onclick="goStep4()">Suivant →</button>
+      </div>
+    </div>
+
+    <!-- Step 4 -->
+    <div id="s4" style="display:none">
+      <div class="field">
+        <lbl>Profil de compression</lbl>
+        <div class="prow">
+          <div class="pbtn" onclick="applyP('max',this)">Max léger</div>
+          <div class="pbtn active" onclick="applyP('bal',this)">Défaut</div>
+          <div class="pbtn" onclick="applyP('hq',this)">Haute qualité</div>
+          <div class="pbtn" onclick="applyP('raw',this)">Aucune</div>
+        </div>
+        <div class="csec">
+          <div class="crow"><lbl>Qualité JPEG</lbl><input type="range" id="qs" min="10" max="100" value="100" step="1" oninput="document.getElementById('qv').textContent=this.value+'%'"><span id="qv">100%</span></div>
+          <div class="crow"><lbl>Résolution (DPI)</lbl><input type="range" id="ds" min="72" max="300" value="144" step="12" oninput="document.getElementById('dv').textContent=this.value"><span id="dv">144</span></div>
+        </div>
+        <div class="hint">Plus bas = fichier plus léger</div>
+      </div>
+
+      <!-- SCAN OPTION -->
+      <div class="field">
+        <lbl>Options</lbl>
+        <div class="toggle-card" id="scan-card" onclick="toggleScan()">
+          <div class="tcheck" id="scan-check"></div>
+          <div style="flex:1">
+            <div style="font-size:14px;font-weight:500">Mode Scan <span class="cv-badge">OpenCV</span></div>
+            <div style="font-size:12px;color:#888;margin-top:2px">Détecte et recadre automatiquement le document — corrige la perspective</div>
+            <div class="cv-loading" id="cv-status"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="prog" id="prog"><div class="pbar"><div class="pfill" id="pfill"></div></div><div class="plbl" id="plbl"></div></div>
+      <div class="rbox" id="rbox"><div class="rtitle">✓ PDF créé avec succès</div><div class="rmeta" id="rmeta"></div></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" style="flex:1;padding:11px" id="back-btn4" onclick="goStep3()">← Retour</button>
+        <button class="btn btn-primary" style="flex:2;padding:11px" id="gen-btn" onclick="generatePDF()">Créer le PDF</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PROJECT DETAIL -->
+<div id="v-proj" class="view">
+  <header><span class="back" onclick="goLib()">← Retour</span><h1>Détails</h1></header>
+  <div class="pvh"><div class="pvi">📄</div><div><div class="pvname" id="pv-name"></div><div class="pvmeta" id="pv-meta"></div></div></div>
+  <div class="pva">
+    <button class="btn btn-primary" style="width:100%;padding:13px;font-size:15px" onclick="dlProj()">⬇ Télécharger le PDF</button>
+    <div class="rnrow"><input type="text" id="rn-in" placeholder="Nouveau nom…" maxlength="60"><button class="btn btn-primary btn-sm" onclick="renameProj()">Renommer</button></div>
+    <button class="btn btn-sm" style="border-color:#e88;color:#c44" onclick="delProj()">Supprimer ce projet</button>
+  </div>
+</div>
+
+<script>
+// ── IndexedDB ─────────────────────────────────────────
+const IDB='PDFBuilder',VER=1,ST='projects';let db=null;
+function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(IDB,VER);r.onupgradeneeded=e=>{if(!e.target.result.objectStoreNames.contains(ST))e.target.result.createObjectStore(ST,{keyPath:'id'})};r.onsuccess=e=>{db=e.target.result;res()};r.onerror=e=>rej(e.target.error)});}
+function dbAll(){return new Promise((res,rej)=>{const r=db.transaction(ST,'readonly').objectStore(ST).getAll();r.onsuccess=()=>res(r.result);r.onerror=e=>rej(e)});}
+function dbGet(id){return new Promise((res,rej)=>{const r=db.transaction(ST,'readonly').objectStore(ST).get(id);r.onsuccess=()=>res(r.result);r.onerror=e=>rej(e)});}
+function dbPut(o){return new Promise((res,rej)=>{const r=db.transaction(ST,'readwrite').objectStore(ST).put(o);r.onsuccess=()=>res();r.onerror=e=>rej(e)});}
+function dbDel(id){return new Promise((res,rej)=>{const r=db.transaction(ST,'readwrite').objectStore(ST).delete(id);r.onsuccess=()=>res();r.onerror=e=>rej(e)});}
+
+// ── OpenCV ────────────────────────────────────────────
+let cvReady=false;
+function onOpenCvReady(){
+  cvReady=true;
+  document.getElementById('cv-status').textContent='';
+  console.log('OpenCV ready');
+}
+
+// ── State ─────────────────────────────────────────────
+let photos=[],projects=[],curId=null,scanMode=false;
+let dragIdx=null,touchIdx=null,tClone=null,tOX=0,tOY=0;
+let tHoldTimer=null,tPendingIdx=null,tPendingEvt=null,tDragging=false;
+let thumbURLs=[];
+
+// ── Helpers ───────────────────────────────────────────
+function fmtSz(b){if(!b)return'?';if(b<1048576)return(b/1024).toFixed(1)+'Ko';return(b/1048576).toFixed(2)+'Mo';}
+function fmtDt(d){return new Date(d).toLocaleDateString('fr-FR',{day:'2-digit',month:'short',year:'numeric'});}
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function tick(){return new Promise(r=>setTimeout(r,30));}
+const PRESETS={max:{q:40,d:96},bal:{q:100,d:144},hq:{q:82,d:180},raw:{q:100,d:300}};
+function applyP(k,el){const p=PRESETS[k];document.getElementById('qs').value=p.q;document.getElementById('ds').value=p.d;document.getElementById('qv').textContent=p.q+'%';document.getElementById('dv').textContent=p.d;document.querySelectorAll('.pbtn').forEach(b=>b.classList.remove('active'));el.classList.add('active');}
+
+// ── Scan toggle ───────────────────────────────────────
+function toggleScan(){
+  if(!cvReady){alert('OpenCV est encore en cours de chargement, réessayez dans quelques secondes.');return;}
+  scanMode=!scanMode;
+  document.getElementById('scan-check').className='tcheck'+(scanMode?' on':'');
+  document.getElementById('scan-check').textContent=scanMode?'✓':'';
+  document.getElementById('scan-card').className='toggle-card'+(scanMode?' on':'');
+}
+
+// ── Views ─────────────────────────────────────────────
+function setV(v){['lib','create','proj'].forEach(x=>document.getElementById('v-'+x).classList.remove('active'));document.getElementById('v-'+v).classList.add('active');}
+function setStep(n){
+  ['s1','s2','s3','s4'].forEach((id,i)=>{document.getElementById(id).style.display=i+1===n?'block':'none';});
+  ['st1','st2','st3','st4'].forEach((id,i)=>{const el=document.getElementById(id);el.className='step'+(i+1===n?' active':i+1<n?' done':'');});
+}
+async function goLib(){revokeThumbURLs();setV('lib');photos=[];projects=await dbAll();renderLib();}
+function goCreate(){setV('create');setStep(1);}
+function goStep1(){setStep(1);}
+function goStep2(){const name=document.getElementById('proj-name').value.trim();if(!name){alert('Donnez un nom au projet.');return;}setStep(2);document.getElementById('pick-status').textContent=photos.length?`${photos.length} photo(s) déjà sélectionnée(s)`:'';}
+function goStep3(){if(!photos.length){alert('Sélectionnez au moins une photo.');return;}setStep(3);renderSortGrid();}
+function goStep4(){if(!photos.length){alert('Sélectionnez au moins une photo.');return;}setStep(4);document.getElementById('rbox').classList.remove('show');document.getElementById('prog').classList.remove('show');const gb=document.getElementById('gen-btn');gb.disabled=false;gb.textContent='Créer le PDF';gb.onclick=generatePDF;document.getElementById('back-btn4').style.display='';}
+
+// ── File picking ──────────────────────────────────────
+function onFilePick(inp){const files=Array.from(inp.files);photos=files;inp.value='';document.getElementById('pick-status').textContent=`${photos.length} photo(s) sélectionnée(s).`;if(photos.length)setTimeout(()=>goStep3(),300);}
+function onFileAdd(inp){photos=[...photos,...Array.from(inp.files)];inp.value='';renderSortGrid();}
+function revokeThumbURLs(){thumbURLs.forEach(u=>URL.revokeObjectURL(u));thumbURLs=[];}
+function makeThumbURL(f){const u=URL.createObjectURL(f);thumbURLs.push(u);return u;}
+
+// ── Sort grid ─────────────────────────────────────────
+function renderSortGrid(){
+  document.getElementById('photo-count').textContent=photos.length;
+  revokeThumbURLs();
+  document.getElementById('sort-grid').innerHTML=photos.map((f,i)=>{
+    const url=makeThumbURL(f);
+    return`<div class="sthumb" id="th-${i}" draggable="true"
+      ondragstart="dStart(event,${i})" ondragover="dOver(event,${i})" ondrop="dDrop(event,${i})" ondragend="dEnd()"
+      ontouchstart="tStart(event,${i})" ontouchmove="tMove(event)" ontouchend="tEnd(event)">
+      <img src="${url}" loading="lazy">
+      <div class="num">${i+1}</div>
+      <button class="del" onclick="event.stopPropagation();delPhoto(${i})">✕</button>
+    </div>`;
+  }).join('');
+}
+function delPhoto(i){photos.splice(i,1);renderSortGrid();}
+
+// Mouse drag
+function dStart(e,i){dragIdx=i;e.currentTarget.classList.add('dragging');e.dataTransfer.effectAllowed='move';}
+function dOver(e,i){e.preventDefault();if(i===dragIdx)return;document.querySelectorAll('.sthumb').forEach(t=>t.classList.remove('over'));const el=document.getElementById('th-'+i);if(el)el.classList.add('over');}
+function dDrop(e,i){e.preventDefault();if(i===dragIdx)return;const m=photos.splice(dragIdx,1)[0];photos.splice(i,0,m);renderSortGrid();}
+function dEnd(){document.querySelectorAll('.sthumb').forEach(t=>{t.classList.remove('dragging');t.classList.remove('over');});dragIdx=null;}
+
+// Touch drag (long press 300ms)
+function tStart(e,i){
+  if(e.target.classList.contains('del'))return;
+  tPendingIdx=i;tPendingEvt={x:e.touches[0].clientX,y:e.touches[0].clientY};tDragging=false;
+  tHoldTimer=setTimeout(()=>{
+    tDragging=true;touchIdx=tPendingIdx;
+    const th=document.getElementById('th-'+touchIdx);
+    const r=th.getBoundingClientRect();
+    tOX=tPendingEvt.x-r.left;tOY=tPendingEvt.y-r.top;
+    tClone=th.cloneNode(true);
+    tClone.style.cssText=`position:fixed;width:${r.width}px;height:${r.height}px;opacity:.75;pointer-events:none;z-index:999;border-radius:8px;overflow:hidden;left:${r.left}px;top:${r.top}px`;
+    document.body.appendChild(tClone);th.classList.add('dragging');
+    if(navigator.vibrate)navigator.vibrate(40);
+  },300);
+}
+function tMove(e){
+  if(!tDragging){if(tHoldTimer&&tPendingEvt){const t=e.touches[0];if(Math.abs(t.clientX-tPendingEvt.x)>8||Math.abs(t.clientY-tPendingEvt.y)>8){clearTimeout(tHoldTimer);tHoldTimer=null;}}return;}
+  e.preventDefault();const t=e.touches[0];
+  tClone.style.left=(t.clientX-tOX)+'px';tClone.style.top=(t.clientY-tOY)+'px';
+  document.querySelectorAll('.sthumb').forEach(t=>t.classList.remove('over'));
+  const el=document.elementFromPoint(t.clientX,t.clientY);
+  const th=el&&el.closest('.sthumb');
+  if(th){const idx=parseInt(th.id.replace('th-',''));if(!isNaN(idx)&&idx!==touchIdx)th.classList.add('over');}
+}
+function tEnd(e){
+  clearTimeout(tHoldTimer);tHoldTimer=null;
+  if(!tDragging){tPendingIdx=null;tDragging=false;return;}
+  const t=e.changedTouches[0];
+  const el=document.elementFromPoint(t.clientX,t.clientY);
+  const th=el&&el.closest('.sthumb');
+  if(th){const idx=parseInt(th.id.replace('th-',''));if(!isNaN(idx)&&idx!==touchIdx){const m=photos.splice(touchIdx,1)[0];photos.splice(idx,0,m);}}
+  if(tClone){document.body.removeChild(tClone);tClone=null;}
+  touchIdx=null;tPendingIdx=null;tDragging=false;renderSortGrid();
+}
+
+// ── Generate PDF ──────────────────────────────────────
+async function generatePDF(){
+  const name=document.getElementById('proj-name').value.trim();
+  if(!name||!photos.length)return;
+  const quality=parseInt(document.getElementById('qs').value)/100;
+  const dpi=parseInt(document.getElementById('ds').value);
+  const btn=document.getElementById('gen-btn');
+  btn.disabled=true;btn.textContent='Création en cours…';
+  document.getElementById('back-btn4').style.display='none';
+  document.getElementById('prog').classList.add('show');
+  document.getElementById('rbox').classList.remove('show');
+  const pf=document.getElementById('pfill'),pl=document.getElementById('plbl');
+  await tick();
+  const {jsPDF}=window.jspdf;
+  let pdf=null;
+  for(let i=0;i<photos.length;i++){
+    pf.style.width=Math.round(i/photos.length*88)+'%';
+    pl.textContent=`${scanMode?'Scan':'Traitement'} page ${i+1}/${photos.length}…`;
+    await tick();
+    const dataUrl=await processPhoto(photos[i],dpi,quality,scanMode);
+    const dims=await getImgDims(dataUrl);
+    const land=dims.w>dims.h;
+    const pw=land?297:210,ph=land?210:297;
+    if(!pdf){pdf=new jsPDF({orientation:land?'l':'p',unit:'mm',format:[pw,ph]});}
+    else{pdf.addPage([pw,ph],land?'l':'p');}
+    const sc=Math.min(pw/dims.w,ph/dims.h);
+    const dw=dims.w*sc,dh=dims.h*sc;
+    pdf.addImage(dataUrl,'JPEG',(pw-dw)/2,(ph-dh)/2,dw,dh,undefined,'FAST');
+  }
+  pf.style.width='94%';pl.textContent='Sauvegarde…';await tick();
+  const blob=pdf.output('blob');
+  const ab=await blob.arrayBuffer();
+  const proj={id:'p'+Date.now(),name,pages:photos.length,size:blob.size,date:Date.now(),pdfData:ab};
+  await dbPut(proj);projects=await dbAll();
+  pf.style.width='100%';
+  document.getElementById('rbox').classList.add('show');
+  document.getElementById('rmeta').textContent=`${photos.length} page(s) · ${fmtSz(blob.size)} · Qualité ${Math.round(quality*100)}% · ${dpi} DPI${scanMode?' · Mode Scan':''}`;
+  btn.disabled=false;btn.textContent='↩ Retour à la bibliothèque';btn.onclick=goLib;
+}
+
+// ── Photo processing ──────────────────────────────────
+async function processPhoto(file,maxDpi,quality,scan){
+  return new Promise((res,rej)=>{
+    const url=URL.createObjectURL(file);
+    const img=new Image();
+    img.onload=()=>{
+      URL.revokeObjectURL(url);
+      const maxPx=Math.round(210/25.4*maxDpi);
+      let w=img.naturalWidth,h=img.naturalHeight;
+      if(w>maxPx||h>maxPx){const sc=Math.min(maxPx/w,maxPx/h);w=Math.round(w*sc);h=Math.round(h*sc);}
+      const c=document.createElement('canvas');c.width=w;c.height=h;
+      const ctx=c.getContext('2d');
+      ctx.drawImage(img,0,0,w,h);
+      if(scan&&cvReady){
+        try{
+          const result=scanDocument(c,w,h);
+          res(result.toDataURL('image/jpeg',quality));
+        }catch(err){
+          console.warn('Scan failed, using original',err);
+          applyScanColors(ctx,w,h);
+          res(c.toDataURL('image/jpeg',quality));
+        }
+      } else {
+        res(c.toDataURL('image/jpeg',quality));
+      }
+    };
+    img.onerror=rej;img.src=url;
+  });
+}
+
+// ── OpenCV scan pipeline ──────────────────────────────
+function scanDocument(srcCanvas,w,h){
+  const cv=window.cv;
+  // Read source
+  const src=cv.imread(srcCanvas);
+  const gray=new cv.Mat();
+  const blurred=new cv.Mat();
+  const edges=new cv.Mat();
+
+  cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);
+  cv.GaussianBlur(gray,blurred,new cv.Size(5,5),0);
+  cv.Canny(blurred,edges,50,150);
+
+  // Dilate to close gaps
+  const kernel=cv.Mat.ones(3,3,cv.CV_8U);
+  const dilated=new cv.Mat();
+  cv.dilate(edges,dilated,kernel);
+
+  // Find contours
+  const contours=new cv.MatVector();
+  const hierarchy=new cv.Mat();
+  cv.findContours(dilated,contours,hierarchy,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
+
+  // Find largest contour by area
+  let bestContour=null,bestArea=0;
+  for(let i=0;i<contours.size();i++){
+    const cnt=contours.get(i);
+    const area=cv.contourArea(cnt);
+    if(area>bestArea){bestArea=area;bestContour=cnt;}
+  }
+
+  let outCanvas=srcCanvas; // fallback
+  const minArea=w*h*0.1; // at least 10% of image
+
+  if(bestContour&&bestArea>minArea){
+    // Approximate polygon
+    const peri=cv.arcLength(bestContour,true);
+    const approx=new cv.Mat();
+    cv.approxPolyDP(bestContour,approx,0.02*peri,true);
+
+    if(approx.rows===4){
+      // We have a quad — do perspective transform
+      const pts=[];
+      for(let i=0;i<4;i++){pts.push({x:approx.data32S[i*2],y:approx.data32S[i*2+1]});}
+      const ordered=orderPoints(pts);
+      const dstW=Math.round(Math.max(dist(ordered[0],ordered[1]),dist(ordered[2],ordered[3])));
+      const dstH=Math.round(Math.max(dist(ordered[0],ordered[3]),dist(ordered[1],ordered[2])));
+
+      const srcPts=cv.matFromArray(4,1,cv.CV_32FC2,[
+        ordered[0].x,ordered[0].y,
+        ordered[1].x,ordered[1].y,
+        ordered[2].x,ordered[2].y,
+        ordered[3].x,ordered[3].y
+      ]);
+      const dstPts=cv.matFromArray(4,1,cv.CV_32FC2,[0,0,dstW,0,dstW,dstH,0,dstH]);
+      const M=cv.getPerspectiveTransform(srcPts,dstPts);
+      const warped=new cv.Mat();
+      cv.warpPerspective(src,warped,M,new cv.Size(dstW,dstH));
+
+      // Apply scan color effect on warped
+      outCanvas=document.createElement('canvas');
+      outCanvas.width=dstW;outCanvas.height=dstH;
+      cv.imshow(outCanvas,warped);
+      applyScanColors(outCanvas.getContext('2d'),dstW,dstH);
+
+      warped.delete();M.delete();srcPts.delete();dstPts.delete();
+      approx.delete();
+    } else {
+      // No clean quad — just apply colors
+      cv.imshow(srcCanvas,src);
+      applyScanColors(srcCanvas.getContext('2d'),w,h);
+    }
+    approx&&approx.isDeleted&&!approx.isDeleted()&&approx.delete();
+  } else {
+    // No document found — just apply scan colors
+    applyScanColors(srcCanvas.getContext('2d'),w,h);
+  }
+
+  // Cleanup
+  src.delete();gray.delete();blurred.delete();edges.delete();kernel.delete();dilated.delete();contours.delete();hierarchy.delete();
+  if(bestContour)bestContour.delete();
+
+  return outCanvas;
+}
+
+// Order quad points: top-left, top-right, bottom-right, bottom-left
+function orderPoints(pts){
+  pts.sort((a,b)=>a.y-b.y);
+  const top=pts.slice(0,2).sort((a,b)=>a.x-b.x);
+  const bot=pts.slice(2,4).sort((a,b)=>a.x-b.x);
+  return[top[0],top[1],bot[1],bot[0]];
+}
+function dist(a,b){return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2);}
+
+// Apply grayscale + contrast boost (scan look)
+function applyScanColors(ctx,w,h){
+  const id=ctx.getImageData(0,0,w,h);
+  const d=id.data;
+  for(let i=0;i<d.length;i+=4){
+    let g=d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114;
+    g+=20; // brightness
+    // S-curve contrast
+    const n=Math.max(0,Math.min(255,g))/255;
+    g=255/(1+Math.exp(-8*(n-0.5)));
+    g=Math.max(0,Math.min(255,g));
+    d[i]=d[i+1]=d[i+2]=g;
+  }
+  sharpen(d,w,h);
+  ctx.putImageData(id,0,0);
+}
+
+function sharpen(d,w,h){
+  const copy=new Uint8ClampedArray(d);
+  const k=[-1,-1,-1,-1,9,-1,-1,-1,-1];
+  for(let y=1;y<h-1;y++){for(let x=1;x<w-1;x++){
+    let s=0,ki=0;
+    for(let dy=-1;dy<=1;dy++){for(let dx=-1;dx<=1;dx++){s+=copy[((y+dy)*w+(x+dx))*4]*k[ki++];}}
+    const idx=(y*w+x)*4;const v=Math.max(0,Math.min(255,s));
+    d[idx]=d[idx+1]=d[idx+2]=v;
+  }}
+}
+
+function getImgDims(dataUrl){return new Promise(res=>{const i=new Image();i.onload=()=>res({w:i.naturalWidth,h:i.naturalHeight});i.src=dataUrl;});}
+
+// ── Library ───────────────────────────────────────────
+function renderLib(){
+  const el=document.getElementById('lib-list');
+  if(!projects.length){el.innerHTML='<div class="library-empty"><div style="font-size:40px;margin-bottom:12px">📂</div><div style="font-weight:500;margin-bottom:6px">Aucun projet</div><div style="font-size:13px">Appuyez sur "+ Nouveau" pour commencer</div></div>';return;}
+  el.innerHTML='<div class="project-list">'+[...projects].sort((a,b)=>b.date-a.date).map(p=>`
+    <div class="project-card" onclick="showProj('${p.id}')">
+      <div class="pi">📄</div>
+      <div style="flex:1;min-width:0"><div class="pname">${esc(p.name)}</div><div class="pmeta">${p.pages} page(s) · ${fmtSz(p.size)} · ${fmtDt(p.date)}</div></div>
+      <span style="color:#bbb;font-size:18px">›</span>
+    </div>`).join('')+'</div>';
+}
+
+// ── Project detail ────────────────────────────────────
+function showProj(id){
+  curId=id;const p=projects.find(x=>x.id===id);if(!p)return;
+  document.getElementById('pv-name').textContent=p.name;
+  document.getElementById('pv-meta').textContent=`${p.pages} page(s) · ${fmtSz(p.size)} · ${fmtDt(p.date)}`;
+  document.getElementById('rn-in').value=p.name;setV('proj');
+}
+async function dlProj(){
+  const p=await dbGet(curId);if(!p?.pdfData){alert('Fichier introuvable.');return;}
+  const fname=p.name.replace(/[^a-zA-Z0-9À-ÿ _\-]/g,'_')+'.pdf';
+  const url=URL.createObjectURL(new Blob([p.pdfData],{type:'application/pdf'}));
+  const a=document.createElement('a');a.href=url;a.download=fname;document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(url);a.remove();},2000);
+}
+async function renameProj(){
+  const n=document.getElementById('rn-in').value.trim();if(!n){alert('Entrez un nom.');return;}
+  const p=await dbGet(curId);if(!p)return;p.name=n;await dbPut(p);projects=await dbAll();
+  document.getElementById('pv-name').textContent=n;alert('Renommé.');
+}
+async function delProj(){
+  if(!confirm('Supprimer ce projet définitivement ?'))return;
+  await dbDel(curId);projects=await dbAll();goLib();
+}
+
+// ── Init ──────────────────────────────────────────────
+(async()=>{
+  await openDB();projects=await dbAll();renderLib();
+  document.getElementById('overlay').style.display='none';
+  // Show OpenCV loading status
+  if(!cvReady)document.getElementById('cv-status').textContent='⏳ OpenCV en cours de chargement…';
+})();
+</script>
+</body>
+</html>
