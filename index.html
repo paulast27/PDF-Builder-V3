@@ -431,27 +431,35 @@ function applyExifTransform(ctx,orientation,w,h){
 }
 
 // ── OpenCV scan pipeline ──────────────────────────────
+// OpenCV is used ONLY for edge detection (grayscale).
+// The perspective warp is done in pure JS to avoid
+// ALL color channel / mirror issues with cv.imshow.
 function scanDocument(srcCanvas,w,h){
   const cv=window.cv;
-  const src=cv.imread(srcCanvas);
-
-  // Work on scaled-down copy for faster processing
   const WORK_MAX=1000;
   const scale=Math.min(1,WORK_MAX/Math.max(w,h));
   const ww=Math.round(w*scale),wh=Math.round(h*scale);
-  const small=new cv.Mat();
-  cv.resize(src,small,new cv.Size(ww,wh));
 
-  const gray=new cv.Mat();
-  cv.cvtColor(small,gray,cv.COLOR_RGBA2GRAY);
+  // Build grayscale working image WITHOUT cv.imread (avoids color issues)
+  const workCanvas=document.createElement('canvas');
+  workCanvas.width=ww;workCanvas.height=wh;
+  const wCtx=workCanvas.getContext('2d');
+  wCtx.drawImage(srcCanvas,0,0,ww,wh);
+  const wImgData=wCtx.getImageData(0,0,ww,wh);
+  // Convert to grayscale manually → feed into OpenCV as 1-channel
+  const grayData=new Uint8Array(ww*wh);
+  for(let i=0;i<ww*wh;i++){
+    const p=i*4;
+    grayData[i]=wImgData.data[p]*0.299+wImgData.data[p+1]*0.587+wImgData.data[p+2]*0.114;
+  }
+  const gray=cv.matFromArray(wh,ww,cv.CV_8UC1,grayData);
 
-  // Try multiple preprocessing strategies to find the document
   const strategies=[
-    ()=>strategyAdaptive(cv,gray,ww,wh),
+    ()=>strategyAdaptive(cv,gray),
     ()=>strategyCanny(cv,gray,5,30,90),
     ()=>strategyCanny(cv,gray,9,20,60),
     ()=>strategyCanny(cv,gray,3,50,150),
-    ()=>strategyAdaptiveLoose(cv,gray,ww,wh),
+    ()=>strategyAdaptiveLoose(cv,gray),
   ];
 
   let bestQuad=null,bestArea=0;
@@ -462,7 +470,6 @@ function scanDocument(srcCanvas,w,h){
     const contours=new cv.MatVector();
     const hierarchy=new cv.Mat();
     cv.findContours(edgeMap,contours,hierarchy,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
-
     for(let i=0;i<contours.size();i++){
       const cnt=contours.get(i);
       const area=cv.contourArea(cnt);
@@ -475,116 +482,133 @@ function scanDocument(srcCanvas,w,h){
           bestArea=area;
           bestQuad=[];
           for(let j=0;j<4;j++)
-            bestQuad.push({x:approx.data32S[j*2]/scale, y:approx.data32S[j*2+1]/scale});
+            bestQuad.push({x:approx.data32S[j*2]/scale,y:approx.data32S[j*2+1]/scale});
         }
       }
       approx.delete();
     }
     edgeMap.delete();contours.delete();hierarchy.delete();
-    if(bestQuad&&bestArea>ww*wh*0.20)break; // good enough, stop trying
+    if(bestQuad&&bestArea>ww*wh*0.20)break;
   }
+  gray.delete();
 
-  let outCanvas=srcCanvas;
+  if(!bestQuad)return srcCanvas; // no document found → return original untouched
 
-  if(bestQuad){
-    const ordered=orderPoints(bestQuad);
-    // Clamp to image bounds with small margin
-    ordered.forEach(p=>{
-      p.x=Math.max(0,Math.min(w-1,p.x));
-      p.y=Math.max(0,Math.min(h-1,p.y));
-    });
+  const ordered=orderPoints(bestQuad);
+  ordered.forEach(p=>{p.x=Math.max(0,Math.min(w-1,p.x));p.y=Math.max(0,Math.min(h-1,p.y));});
 
-    const dstW=Math.round(Math.max(dist(ordered[0],ordered[1]),dist(ordered[2],ordered[3])));
-    const dstH=Math.round(Math.max(dist(ordered[0],ordered[3]),dist(ordered[1],ordered[2])));
+  const dstW=Math.round(Math.max(dist(ordered[0],ordered[1]),dist(ordered[2],ordered[3])));
+  const dstH=Math.round(Math.max(dist(ordered[0],ordered[3]),dist(ordered[1],ordered[2])));
 
-    // Ensure portrait if height < width, swap
-    let fw=dstW,fh=dstH,dstPtsArr;
-    if(fw>fh){
-      // rotate 90° to portrait
-      fw=dstH;fh=dstW;
-      dstPtsArr=[0,fw, 0,0, fh,0, fh,fw];
-    } else {
-      dstPtsArr=[0,0, dstW,0, dstW,dstH, 0,dstH];
+  // Pure JS perspective warp — zero color channel involvement
+  const warped=perspectiveWarp(srcCanvas,ordered,dstW,dstH);
+  applySubtleEnhance(warped.getContext('2d'),dstW,dstH);
+  return warped;
+}
+
+// ── Pure JS perspective warp (homography inverse mapping) ──
+function perspectiveWarp(srcCanvas,srcPts,dstW,dstH){
+  const dstPts=[{x:0,y:0},{x:dstW,y:0},{x:dstW,y:dstH},{x:0,y:dstH}];
+  const H=computeHomography(srcPts,dstPts);
+  const Hi=inv3x3(H);
+  const sw=srcCanvas.width,sh=srcCanvas.height;
+  const srcData=srcCanvas.getContext('2d').getImageData(0,0,sw,sh).data;
+  const out=document.createElement('canvas');
+  out.width=dstW;out.height=dstH;
+  const outCtx=out.getContext('2d');
+  const outImg=outCtx.createImageData(dstW,dstH);
+  const d=outImg.data;
+  for(let y=0;y<dstH;y++){
+    for(let x=0;x<dstW;x++){
+      const denom=Hi[6]*x+Hi[7]*y+Hi[8];
+      const sx=Math.round((Hi[0]*x+Hi[1]*y+Hi[2])/denom);
+      const sy=Math.round((Hi[3]*x+Hi[4]*y+Hi[5])/denom);
+      if(sx>=0&&sx<sw&&sy>=0&&sy<sh){
+        const si=(sy*sw+sx)*4, di=(y*dstW+x)*4;
+        d[di]=srcData[si];d[di+1]=srcData[si+1];
+        d[di+2]=srcData[si+2];d[di+3]=255;
+      }
     }
-
-    const srcPts=cv.matFromArray(4,1,cv.CV_32FC2,[
-      ordered[0].x,ordered[0].y,
-      ordered[1].x,ordered[1].y,
-      ordered[2].x,ordered[2].y,
-      ordered[3].x,ordered[3].y
-    ]);
-    const dstPts=cv.matFromArray(4,1,cv.CV_32FC2,dstPtsArr);
-    const M=cv.getPerspectiveTransform(srcPts,dstPts);
-    const warped=new cv.Mat();
-    cv.warpPerspective(src,warped,M,new cv.Size(fw,fh));
-
-    outCanvas=document.createElement('canvas');
-    outCanvas.width=fw; outCanvas.height=fh;
-
-    // Convert BGRA→RGBA before drawing to canvas to avoid color/mirror artifacts
-    const rgba=new cv.Mat();
-    cv.cvtColor(warped,rgba,cv.COLOR_BGRA2RGBA);
-    cv.imshow(outCanvas,rgba);
-    rgba.delete();
-
-    applySubtleEnhance(outCanvas.getContext('2d'),fw,fh);
-    warped.delete();M.delete();srcPts.delete();dstPts.delete();
   }
-
-  [src,small,gray].forEach(m=>{try{m.delete();}catch(e){}});
-  return outCanvas;
+  outCtx.putImageData(outImg,0,0);
+  return out;
 }
 
-// Strategy 1: adaptive threshold
-function strategyAdaptive(cv,gray,w,h){
-  const blurred=new cv.Mat();
-  cv.GaussianBlur(gray,blurred,new cv.Size(9,9),0);
-  const thresh=new cv.Mat();
-  cv.adaptiveThreshold(blurred,thresh,255,cv.ADAPTIVE_THRESH_GAUSSIAN_C,cv.THRESH_BINARY,21,10);
-  const inv=new cv.Mat();cv.bitwise_not(thresh,inv);
-  const kernel=cv.Mat.ones(5,5,cv.CV_8U);
-  const dilated=new cv.Mat();
-  cv.dilate(inv,dilated,kernel,new cv.Point(-1,-1),2);
-  [blurred,thresh,inv,kernel].forEach(m=>m.delete());
-  return dilated;
+// DLT homography (4 point correspondences → 3×3 matrix)
+function computeHomography(src,dst){
+  const A=[];
+  for(let i=0;i<4;i++){
+    const {x,y}=src[i];const xp=dst[i].x,yp=dst[i].y;
+    A.push([-x,-y,-1,0,0,0,x*xp,y*xp,xp]);
+    A.push([0,0,0,-x,-y,-1,x*yp,y*yp,yp]);
+  }
+  const b=A.map(r=>-r[8]);
+  const M=A.map(r=>r.slice(0,8));
+  const h=gaussElim(M,b);
+  return[...h,1];
+}
+function gaussElim(A,b){
+  const n=8;
+  const aug=A.map((r,i)=>[...r,b[i]]);
+  for(let c=0;c<n;c++){
+    let mx=c;
+    for(let r=c+1;r<n;r++)if(Math.abs(aug[r][c])>Math.abs(aug[mx][c]))mx=r;
+    [aug[c],aug[mx]]=[aug[mx],aug[c]];
+    for(let r=c+1;r<n;r++){
+      const f=aug[r][c]/aug[c][c];
+      for(let j=c;j<=n;j++)aug[r][j]-=f*aug[c][j];
+    }
+  }
+  const x=new Array(n).fill(0);
+  for(let i=n-1;i>=0;i--){
+    x[i]=aug[i][n];
+    for(let j=i+1;j<n;j++)x[i]-=aug[i][j]*x[j];
+    x[i]/=aug[i][i];
+  }
+  return x;
+}
+function inv3x3(H){
+  const[a,b,c,d,e,f,g,h,k]=H;
+  const det=a*(e*k-f*h)-b*(d*k-f*g)+c*(d*h-e*g);
+  return[(e*k-f*h)/det,(c*h-b*k)/det,(b*f-c*e)/det,
+         (f*g-d*k)/det,(a*k-c*g)/det,(c*d-a*f)/det,
+         (d*h-e*g)/det,(b*g-a*h)/det,(a*e-b*d)/det];
 }
 
-// Strategy 2: Canny with variable params
+// Strategies (grayscale input, 1-channel Mat)
+function strategyAdaptive(cv,gray){
+  const b=new cv.Mat();cv.GaussianBlur(gray,b,new cv.Size(9,9),0);
+  const t=new cv.Mat();cv.adaptiveThreshold(b,t,255,cv.ADAPTIVE_THRESH_GAUSSIAN_C,cv.THRESH_BINARY,21,10);
+  const inv=new cv.Mat();cv.bitwise_not(t,inv);
+  const k=cv.Mat.ones(5,5,cv.CV_8U);const dil=new cv.Mat();
+  cv.dilate(inv,dil,k,new cv.Point(-1,-1),2);
+  [b,t,inv,k].forEach(m=>m.delete());return dil;
+}
 function strategyCanny(cv,gray,blur,t1,t2){
-  const blurred=new cv.Mat();
-  cv.GaussianBlur(gray,blurred,new cv.Size(blur%2===0?blur+1:blur,blur%2===0?blur+1:blur),0);
-  const edges=new cv.Mat();
-  cv.Canny(blurred,edges,t1,t2);
-  const kernel=cv.Mat.ones(5,5,cv.CV_8U);
-  const dilated=new cv.Mat();
-  cv.dilate(edges,dilated,kernel,new cv.Point(-1,-1),2);
-  [blurred,edges,kernel].forEach(m=>m.delete());
-  return dilated;
+  const sz=blur%2===0?blur+1:blur;
+  const b=new cv.Mat();cv.GaussianBlur(gray,b,new cv.Size(sz,sz),0);
+  const e=new cv.Mat();cv.Canny(b,e,t1,t2);
+  const k=cv.Mat.ones(5,5,cv.CV_8U);const dil=new cv.Mat();
+  cv.dilate(e,dil,k,new cv.Point(-1,-1),2);
+  [b,e,k].forEach(m=>m.delete());return dil;
 }
-
-// Strategy 5: loose adaptive for bright/uniform backgrounds
 function strategyAdaptiveLoose(cv,gray){
-  const blurred=new cv.Mat();
-  cv.GaussianBlur(gray,blurred,new cv.Size(15,15),0);
-  const thresh=new cv.Mat();
-  cv.adaptiveThreshold(blurred,thresh,255,cv.ADAPTIVE_THRESH_MEAN_C,cv.THRESH_BINARY,31,15);
-  const inv=new cv.Mat();cv.bitwise_not(thresh,inv);
-  const kernel=cv.Mat.ones(7,7,cv.CV_8U);
-  const dilated=new cv.Mat();
-  cv.dilate(inv,dilated,kernel,new cv.Point(-1,-1),3);
-  [blurred,thresh,inv,kernel].forEach(m=>m.delete());
-  return dilated;
+  const b=new cv.Mat();cv.GaussianBlur(gray,b,new cv.Size(15,15),0);
+  const t=new cv.Mat();cv.adaptiveThreshold(b,t,255,cv.ADAPTIVE_THRESH_MEAN_C,cv.THRESH_BINARY,31,15);
+  const inv=new cv.Mat();cv.bitwise_not(t,inv);
+  const k=cv.Mat.ones(7,7,cv.CV_8U);const dil=new cv.Mat();
+  cv.dilate(inv,dil,k,new cv.Point(-1,-1),3);
+  [b,t,inv,k].forEach(m=>m.delete());return dil;
 }
 
-// Order points: TL, TR, BR, BL — robust version
+// TL=min(x+y), BR=max(x+y), TR=max(x-y), BL=min(x-y)
 function orderPoints(pts){
-  // Sort by x+y: min=TL, max=BR
   const s=pts.map(p=>p.x+p.y);
   const d=pts.map(p=>p.x-p.y);
   const tl=pts[s.indexOf(Math.min(...s))];
   const br=pts[s.indexOf(Math.max(...s))];
-  const tr=pts[d.indexOf(Math.min(...d))];
-  const bl=pts[d.indexOf(Math.max(...d))];
+  const tr=pts[d.indexOf(Math.max(...d))];
+  const bl=pts[d.indexOf(Math.min(...d))];
   return[tl,tr,br,bl];
 }
 function dist(a,b){return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2);}
